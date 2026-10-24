@@ -1,3 +1,23 @@
+# 1.1.73
+
+## 中文
+
+- 版本 **1.1.73**，对齐 DSH **0.2.1-rc.2**（`dshTarget` 同步更新）。
+- 修复安装后整轮失败：`unknown prompt variable "{{cwd}}" in section "deployment:persona-suffix"`。
+- 0.2.1 起 `systemPrompt` 只注册 `provider` / `model` 两个变量，工作目录改由 `dsh-working-directory` 的 runtime context（`Current working directory: "..."`）下发。本版：
+  - 插件 `cordis.patch.yml` 的 `system-prompt` 覆盖不再写 `personaSuffix: Your working directory is {{cwd}}.`；
+  - 运行时去掉 persona-suffix 里残留的 `{{cwd}}`，并在 `assemble` 重写阶段清除任何未注册变量的残留引用（旧 profile / 旧 home patch 叠加也不炸）；
+  - `ALLOW_EXEC_PERSONA_*` 常量不再拼 `{{cwd}}`。
+
+## English
+
+- **1.1.73**, aligned with DSH **0.2.1-rc.2** (`dshTarget` updated).
+- Fix the whole-turn failure after install: `unknown prompt variable "{{cwd}}" in section "deployment:persona-suffix"`.
+- Since 0.2.1 `systemPrompt` only registers `provider` / `model`; the working directory comes from the `dsh-working-directory` runtime context (`Current working directory: "..."`). This release:
+  - stops writing `personaSuffix: Your working directory is {{cwd}}.` in the bundle patch;
+  - strips leftover `{{cwd}}` at runtime and scrubs any unregistered variable reference during `assemble` rewriting (old profile / home patches no longer crash the turn);
+  - drops `{{cwd}}` from the `ALLOW_EXEC_PERSONA_*` constants.
+
 # 1.1.71
 
 ## 中文

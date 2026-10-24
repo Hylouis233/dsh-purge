@@ -28,7 +28,10 @@
   config:
     includeHarnessIdentity: false
     personaPrefix: ""
-    personaSuffix: Your working directory is {{cwd}}.
+    # 0.2.1 起 `{{cwd}}` 不是已注册的 prompt 变量（只有 provider / model）。工作目录由
+    # @deepseek-ai/dsh-working-directory 以 `Current working directory: "..."` 的 runtime
+    # context 下发；这里再写 personaSuffix 会触发 unknown prompt variable，整轮失败。
+    personaSuffix: ""
 
 - id: dsh-purge
   inject: [systemPrompt, tools]
