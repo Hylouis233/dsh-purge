@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - master
+  # 手动发版：可指定版本号（留空则自动 patch+1）
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "要发布的版本号（如 1.1.74；留空自动 patch+1）"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -26,37 +33,54 @@ jobs:
           node --check lib/index.js
           node --check lib/core.js
           node --check lib/reapply.js
+          node --check scripts/release-version.mjs
           node --input-type=module -e "import './lib/index.js'"
 
+      # 版本号在这里定：patch+1 / 采用 release-notes 里更新的段落 / 手动指定。
+      # 判定“该版本 tag 已存在”时直接跳过，所以纯文档、纯 CI 改动不会重复发版。
+      - name: Resolve version
+        id: ver
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: node scripts/release-version.mjs
+
+      - name: Skip when this version is already released
+        if: steps.ver.outputs.skip == '1'
+        run: |
+          echo "skip: ${{ steps.ver.outputs.reason }}"
+          echo "### 未发布：${{ steps.ver.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish GitHub Release
+        if: steps.ver.outputs.skip != '1'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          version="$(node -p "require('./package.json').version")"
-          tag="v${version}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "already published: $tag"
-            exit 0
+          tag="v${VERSION}"
+          zip="dsh-purge-${VERSION}.zip"
+
+          # 日志段落取 release-notes.md 里 "# <version>" 到下一个版本标题之间的内容；
+          # 没写就生成一个最小骨架，保证 --notes-file 一定有内容。
+          notes="$(mktemp)"
+          if grep -qE "^# +v?${VERSION}\s*$" release-notes.md; then
+            awk -v ver="${VERSION}" '
+              $0 ~ "^# +v?" ver "[[:space:]]*$" {found=1; next}
+              found && /^# +v?[0-9]+\.[0-9]+\.[0-9]+/ {exit}
+              found {print}
+            ' release-notes.md > "$notes"
           fi
-          first="$(head -n 1 release-notes.md | tr -d '\r')"
-          if [ "$first" != "# ${version}" ]; then
-            echo "release-notes.md 第一行必须是 # ${version}，现在是: ${first}"
-            exit 1
+          if [ ! -s "$notes" ]; then
+            printf '本版内容\n\n%s\n' "$(git log -1 --pretty=%s)" > "$notes"
           fi
-          zip="dsh-purge-${version}.zip"
-          if git rev-parse -q --verify "refs/tags/${tag}^{}" >/dev/null; then
-            commit="$(git rev-parse "refs/tags/${tag}^{}")"
-            git archive --format=zip --prefix="dsh-purge-${version}/" --output="$zip" "$commit"
-            gh release create "$tag" --title "$tag" --notes-file release-notes.md
-          else
-            git archive --format=zip --prefix="dsh-purge-${version}/" --output="$zip" HEAD
-            args=(release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes-file release-notes.md)
-            case "$version" in
-              *beta*|*alpha*|*rc*) args+=(--prerelease) ;;
-            esac
-            gh "${args[@]}"
-          fi
+
+          git archive --format=zip --prefix="dsh-purge-${VERSION}/" --output="$zip" HEAD
           test -s "$zip"
+
+          args=(release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes-file "$notes")
+          case "$VERSION" in
+            *beta*|*alpha*|*rc*) args+=(--prerelease) ;;
+          esac
+          gh "${args[@]}"
           gh release upload "$tag" "$zip" --clobber
           echo "published https://github.com/${{ github.repository }}/releases/tag/${tag}"
