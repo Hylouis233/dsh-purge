@@ -82,6 +82,49 @@ function cmpSemver(a, b) {
   return 0;
 }
 
+/**
+ * 最新 tag 之后有没有「实质改动」。
+ *
+ * 插件发版的意义是让用户装到新代码，所以只看会进安装包的部分：
+ * lib/ bin/ scripts/ presets/ skills/ client.js cordis.patch.yml package.json。
+ * 纯文档、纯 CI、纯 .gitignore 之类不发版，否则改个 README 也会刷一个版本号。
+ *
+ * 拿不到 git 信息时返回 true（宁可多发一版，也不要漏发真改动）。
+ */
+const SUBSTANTIVE_PATHS = [
+  "lib",
+  "bin",
+  "scripts",
+  "presets",
+  "skills",
+  "client.js",
+  "cordis.patch.yml",
+  "package.json",
+];
+
+function git(args) {
+  try {
+    return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function hasSubstantiveChangesSinceLatestTag(tags) {
+  const semverTags = [...tags]
+    .filter((t) => /^v?\d+\.\d+\.\d+/.test(t))
+    .map((t) => t.replace(/^v/, ""))
+    .sort(cmpSemver);
+  if (semverTags.length === 0) return { substantive: true, since: null, files: [] };
+  const since = `v${semverTags[semverTags.length - 1]}`;
+
+  // 优先用提交区间；拿不到（浅克隆等）就当有改动。
+  const changed = git(["diff", "--name-only", `${since}..HEAD`, "--", ...SUBSTANTIVE_PATHS]);
+  if (changed === null) return { substantive: true, since, files: [] };
+  const files = changed.split("\n").map((f) => f.trim()).filter(Boolean);
+  return { substantive: files.length > 0, since, files };
+}
+
 function main() {
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
   const current = String(pkg.version || "");
@@ -98,6 +141,7 @@ function main() {
   if (manual) {
     setOutput("version", manual);
     setOutput("skip", "0");
+    setOutput("bumped", "0");
     setOutput("reason", "manual:RELEASE_VERSION");
     return;
   }
@@ -109,24 +153,39 @@ function main() {
     if (tags.has(`v${pick}`)) {
       setOutput("version", pick);
       setOutput("skip", "1");
+      setOutput("bumped", "0");
       setOutput("reason", `notes-ahead-but-tag-exists:v${pick}`);
       return;
     }
     setOutput("version", pick);
     setOutput("skip", "0");
+    setOutput("bumped", "0");
     setOutput("reason", "notes-ahead");
     return;
   }
 
-  // 3) 当前版本的 tag 已存在 → 这次不该发
-  if (tags.has(`v${current}`)) {
+  // 3) 当前版本还没发过 → 就发当前版本，不动 package.json
+  if (!tags.has(`v${current}`)) {
     setOutput("version", current);
-    setOutput("skip", "1");
-    setOutput("reason", `tag-exists:v${current}`);
+    setOutput("skip", "0");
+    setOutput("bumped", "0");
+    setOutput("reason", `publish-current:${current}`);
     return;
   }
 
-  // 4) patch +1，跳过已被占用的 tag
+  // 4) 当前版本已发过 → bump 到下一个空闲 patch 并发新版。
+  //    「已经发过」不等于「这次不用发」：作者推了新代码就该有新版本。
+  const change = hasSubstantiveChangesSinceLatestTag(tags);
+  say(`substantive changes since ${change.since || "(none)"}: ${change.substantive}`);
+  if (change.files.length) say(`  files: ${change.files.slice(0, 8).join(", ")}${change.files.length > 8 ? " …" : ""}`);
+  if (!change.substantive) {
+    setOutput("version", current);
+    setOutput("skip", "1");
+    setOutput("bumped", "0");
+    setOutput("reason", `no-substantive-changes-since:${change.since || "unknown"}`);
+    return;
+  }
+
   let next = bumpPatch(current);
   let guard = 0;
   while (next && tags.has(`v${next}`) && guard < 100) {
@@ -136,11 +195,13 @@ function main() {
   if (!next) {
     setOutput("version", current);
     setOutput("skip", "1");
+    setOutput("bumped", "0");
     setOutput("reason", `cannot-bump:${current}`);
     return;
   }
   setOutput("version", next);
   setOutput("skip", "0");
+  setOutput("bumped", "1");
   setOutput("reason", `bump-from:${current}`);
 
   pkg.version = next;

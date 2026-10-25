@@ -4,11 +4,11 @@ on:
   push:
     branches:
       - master
-  # 手动发版：可指定版本号（留空则自动 patch+1）
+  # 手动发版：可指定版本号（留空则由脚本决定）
   workflow_dispatch:
     inputs:
       version:
-        description: "要发布的版本号（如 1.1.74；留空自动 patch+1）"
+        description: "要发布的版本号（如 1.1.74；留空自动决定）"
         required: false
         type: string
 
@@ -36,15 +36,16 @@ jobs:
           node --check scripts/release-version.mjs
           node --input-type=module -e "import './lib/index.js'"
 
-      # 版本号在这里定：patch+1 / 采用 release-notes 里更新的段落 / 手动指定。
-      # 判定“该版本 tag 已存在”时直接跳过，所以纯文档、纯 CI 改动不会重复发版。
+      # 版本在这里定：
+      #   手动指定 > release-notes 里更靠前的新版本 > 当前版本没发过就发它 > 否则 patch+1
+      # 「当前版本已发过」= 该发下一版，不是跳过；只有确实推不动时才 skip。
       - name: Resolve version
         id: ver
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: node scripts/release-version.mjs
 
-      - name: Skip when this version is already released
+      - name: Report skip
         if: steps.ver.outputs.skip == '1'
         run: |
           echo "skip: ${{ steps.ver.outputs.reason }}"
@@ -60,8 +61,8 @@ jobs:
           tag="v${VERSION}"
           zip="dsh-purge-${VERSION}.zip"
 
-          # 日志段落取 release-notes.md 里 "# <version>" 到下一个版本标题之间的内容；
-          # 没写就生成一个最小骨架，保证 --notes-file 一定有内容。
+          # 发布说明优先取 release-notes.md 里 "# <version>" 段落；
+          # 没写就用本次提交标题兜底，保证每次自动发版都有可读说明。
           notes="$(mktemp)"
           if grep -qE "^# +v?${VERSION}\s*$" release-notes.md; then
             awk -v ver="${VERSION}" '
@@ -84,3 +85,22 @@ jobs:
           gh "${args[@]}"
           gh release upload "$tag" "$zip" --clobber
           echo "published https://github.com/${{ github.repository }}/releases/tag/${tag}"
+
+      # 把新版本写回仓库：插件的更新检查读的是 GitHub tags，
+      # 但仓库里的 package.json 若停在旧版，本地与远端就会长期不一致。
+      # [skip ci] 防止这次回写再次触发展开新版本，形成无限发版。
+      - name: Commit bumped version
+        if: steps.ver.outputs.skip != '1' && steps.ver.outputs.bumped == '1'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json
+          if git diff --cached --quiet; then
+            echo "package.json unchanged; nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(release): v${VERSION} [skip ci]"
+          git push origin HEAD:master
