@@ -88,13 +88,18 @@ jobs:
 
       # 把新版本写回仓库：插件的更新检查读的是 GitHub tags，
       # 但仓库里的 package.json 若停在旧版，本地与远端就会长期不一致。
-      # [skip ci] 防止这次回写再次触发展开新版本，形成无限发版。
+      #
+      # 注意：跳过标记必须动态拼接，不能把那个字面量写进本文件。
+      # GitHub 会扫描整个提交的 diff 来决定是否跳过 workflow，
+      # 只要改动里出现该字符串，这次 push 就不会触发 Actions
+      # （本仓库踩过：改了 workflow 自己，结果一条 run 都没有）。
       - name: Commit bumped version
         if: steps.ver.outputs.skip != '1' && steps.ver.outputs.bumped == '1'
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
+          skip_mark="[skip"" ci]"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json
@@ -102,5 +107,5 @@ jobs:
             echo "package.json unchanged; nothing to commit"
             exit 0
           fi
-          git commit -m "chore(release): v${VERSION} [skip ci]"
+          git commit -m "chore(release): v${VERSION} ${skip_mark}"
           git push origin HEAD:master
